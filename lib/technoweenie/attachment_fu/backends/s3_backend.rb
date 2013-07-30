@@ -17,28 +17,22 @@ module Technoweenie # :nodoc:
       # If you don't already have your access keys, all you need to sign up for the S3 service is an account at Amazon.
       # You can sign up for S3 and get access keys by visiting http://aws.amazon.com/s3.
       #
-      # If you wish to use Amazon CloudFront to serve the files, you can also specify a distibution domain for the bucket.
-      # To read more about CloudFront, visit http://aws.amazon.com/cloudfront
-      #
       # Example configuration (RAILS_ROOT/config/amazon_s3.yml)
-      #
+      # 
       #   development:
       #     bucket_name: appname_development
       #     access_key_id: <your key>
       #     secret_access_key: <your key>
-      #     distribution_domain: XXXX.cloudfront.net
-      #
+      #   
       #   test:
       #     bucket_name: appname_test
       #     access_key_id: <your key>
       #     secret_access_key: <your key>
-      #     distribution_domain: XXXX.cloudfront.net
-      #
+      #   
       #   production:
       #     bucket_name: appname
       #     access_key_id: <your key>
       #     secret_access_key: <your key>
-      #     distribution_domain: XXXX.cloudfront.net
       #
       # You can change the location of the config path by passing a full path to the :s3_config_path option.
       #
@@ -65,8 +59,6 @@ module Technoweenie # :nodoc:
       # * <tt>:server</tt> - The server to make requests to. Defaults to <tt>s3.amazonaws.com</tt>.
       # * <tt>:port</tt> - The port to the requests should be made on. Defaults to 80 or 443 if <tt>:use_ssl</tt> is set.
       # * <tt>:use_ssl</tt> - If set to true, <tt>:port</tt> will be implicitly set to 443, unless specified otherwise. Defaults to false.
-      # * <tt>:distribution_domain</tt> - The CloudFront distribution domain for the bucket.  This can either be the assigned
-      #     distribution domain (ie. XXX.cloudfront.net) or a chosen domain using a CNAME. See CloudFront for more details.
       #
       # == Usage
       #
@@ -89,43 +81,10 @@ module Technoweenie # :nodoc:
       #
       # Which would result in URLs like <tt>http(s)://:server/:bucket_name/my/custom/path/:id/:filename.</tt>
       #
-      # === Using different bucket names on different models
-      #
-      # By default the bucket name that the file will be stored to is the one specified by the
-      # <tt>:bucket_name</tt> key in the amazon_s3.yml file.  You can use the <tt>:bucket_key</tt> option
-      # to overide this behavior on a per model basis.  For instance if you want a bucket that will hold
-      # only Photos you can do this:
-      #
-      #   class Photo < ActiveRecord::Base
-      #     has_attachment :storage => :s3, :bucket_key => :photo_bucket_name
-      #   end
-      #
-      # And then your amazon_s3.yml file needs to look like this.
-      #
-      #   development:
-      #     bucket_name: appname_development
-      #     access_key_id: <your key>
-      #     secret_access_key: <your key>
-      #
-      #   test:
-      #     bucket_name: appname_test
-      #     access_key_id: <your key>
-      #     secret_access_key: <your key>
-      #
-      #   production:
-      #     bucket_name: appname
-      #     photo_bucket_name: appname_photos
-      #     access_key_id: <your key>
-      #     secret_access_key: <your key>
-      #
-      #  If the bucket_key you specify is not there in a certain environment then attachment_fu will
-      #  default to the <tt>bucket_name</tt> key.  This way you only have to create special buckets
-      #  this can be helpful if you only need special buckets in certain environments.
-      #
       # === Permissions
       #
       # By default, files are stored on S3 with public access permissions. You can customize this using
-      # the <tt>:s3_access</tt> option to <tt>has_attachment</tt>. Available values are
+      # the <tt>:s3_access</tt> option to <tt>has_attachment</tt>. Available values are 
       # <tt>:private</tt>, <tt>:public_read_write</tt>, and <tt>:authenticated_read</tt>.
       #
       # === Other options
@@ -158,98 +117,73 @@ module Technoweenie # :nodoc:
       #
       # Niether <tt>base_path</tt> or <tt>full_filename</tt> include the bucket name as part of the path.
       # You can retrieve the bucket name using the <tt>bucket_name</tt> method.
-      #
-      # === Accessing CloudFront URLs
-      #
-      # You can get an object's CloudFront URL using the cloudfront_url accessor.  Using the example from above:
-      # @postcard.cloudfront_url # => http://XXXX.cloudfront.net/photos/1/mexico.jpg
-      #
-      # The resulting url is in the form: http://:distribution_domain/:table_name/:id/:file
-      #
-      # If you set :cloudfront to true in your model, the public_url will be the CloudFront
-      # URL, not the S3 URL.
-      class S3Backend < BackendDelegator
+      module S3Backend
         class RequiredLibraryNotFoundError < StandardError; end
         class ConfigFileNotFoundError < StandardError; end
 
-        mattr_reader :s3_config
-        attr_reader :bucket_name
-
-        def initialize(obj, opts)
-          @bucket_name = opts[:bucket_name] || @@s3_config[:bucket_name]
-          super(obj, opts)
-        end
-
-        def s3_config
-          @@s3_config
-        end
-
-        def self.included_in_base(base) #:nodoc:
-
+        def self.included(base) #:nodoc:
+          mattr_reader :bucket_name, :s3_config, :bucket, :s3
+          
           begin
-            require 'aws/s3'
-            include AWS::S3
+            require 'aws'
+            AWS::S3
           rescue LoadError
-            raise RequiredLibraryNotFoundError.new('AWS::S3 could not be loaded')
+            raise RequiredLibraryNotFoundError.new(
+              'AWS::S3 could not be loaded')
           end
 
-          if base.attachment_options[:s3_access_key] && base.attachment_options[:s3_secret_key]
-            @@s3_config = {:access_key_id => base.attachment_options[:s3_access_key],
-                           :secret_access_key => base.attachment_options[:s3_secret_key],
-                           :distribution_domain => base.attachment_options[:s3_distribution_domain]}
-          else
-            @@s3_config_path = base.attachment_options[:s3_config_path] || (RAILS_ROOT + '/config/amazon_s3.yml')
-            @@s3_config = @@s3_config = YAML.load(ERB.new(File.read(@@s3_config_path)).result)[RAILS_ENV].symbolize_keys
-          end
+          @@s3_config_path = Rails.root.join('config/aws.yml')
+          @@s3_config = @@s3_config = YAML.load(
+            File.read(@@s3_config_path)
+          )[Rails.env].deep_symbolize_keys!
 
-          Base.establish_connection!(s3_config.slice(:access_key_id, :secret_access_key, :server, :port, :use_ssl, :persistent, :proxy))
+          @@bucket_name = s3_config[:s3_buckets][:attachment_fu]
+          @@s3 = AWS::S3.new(:s3_endpoint => 's3.amazonaws.com')
 
-          # Bucket.create(@@bucket_name)
-
+          @@bucket = @@s3.buckets[@@bucket_name]
+          base.before_update :rename_file
         end
 
         def self.protocol
           @protocol ||= s3_config[:use_ssl] ? 'https://' : 'http://'
         end
-
+        
         def self.hostname
-          @hostname ||= s3_config[:server] || AWS::S3::DEFAULT_HOST
+          @hostname ||= 's3.amazonaws.com'
         end
-
+        
         def self.port_string
-          @port_string ||= (s3_config[:port].nil? || s3_config[:port] == (s3_config[:use_ssl] ? 443 : 80)) ? '' : ":#{s3_config[:port]}"
-        end
-
-        def self.distribution_domain
-          @distribution_domain = s3_config[:distribution_domain]
+          @port_string ||= 
+            (s3_config[:port].nil? || 
+             s3_config[:port] == 
+              (s3_config[:use_ssl] ? 443 : 80)) ? 
+                '' : 
+                ":#{s3_config[:port]}"
         end
 
         module ClassMethods
           def s3_protocol
             Technoweenie::AttachmentFu::Backends::S3Backend.protocol
           end
-
+          
           def s3_hostname
             Technoweenie::AttachmentFu::Backends::S3Backend.hostname
           end
-
+          
           def s3_port_string
             Technoweenie::AttachmentFu::Backends::S3Backend.port_string
           end
-
-          def cloudfront_distribution_domain
-            Technoweenie::AttachmentFu::Backends::S3Backend.distribution_domain
-          end
         end
 
-        # called by the ActiveRecord class from filename=
-        def notify_rename
+        # Overwrites the base filename writer in order to store the old filename
+        def filename=(value)
           @old_filename = filename unless filename.nil? || @old_filename
+          write_attribute :filename, sanitize_filename(value)
         end
 
         # The attachment ID used in the full path of a file
         def attachment_path_id
-          ((respond_to?(:parent_id) && parent_id) || @obj.id).to_s
+          ((respond_to?(:parent_id) && parent_id) || id).to_s
         end
 
         # The pseudo hierarchy containing the file relative to the bucket name
@@ -264,7 +198,7 @@ module Technoweenie # :nodoc:
           File.join(base_path, thumbnail_name_for(thumbnail))
         end
 
-        # All public objects are accessible via a GET request to the S3 servers. You can generate a
+        # All public objects are accessible via a GET request to the S3 servers. You can generate a 
         # url for an object using the s3_url method.
         #
         #   @photo.s3_url
@@ -275,31 +209,11 @@ module Technoweenie # :nodoc:
         #
         # The optional thumbnail argument will output the thumbnail's filename (if any).
         def s3_url(thumbnail = nil)
-          File.join(s3_protocol + s3_hostname + s3_port_string, bucket_name, full_filename(thumbnail))
+          s3_object(thumbnail).public_url.to_s
         end
+        alias_method :public_filename, :s3_url
 
-        # All public objects are accessible via a GET request to CloudFront. You can generate a
-        # url for an object using the cloudfront_url method.
-        #
-        #   @photo.cloudfront_url
-        #
-        # The resulting url is in the form: <tt>http://:distribution_domain/:table_name/:id/:file</tt> using
-        # the <tt>:distribution_domain</tt> variable set in the configuration parameters in <tt>RAILS_ROOT/config/amazon_s3.yml</tt>.
-        #
-        # The optional thumbnail argument will output the thumbnail's filename (if any).
-        def cloudfront_url(thumbnail = nil)
-          "http://" + s3_config[:distribution_domain] + "/" + full_filename(thumbnail)
-        end
-
-        def public_url(*args)
-          if attachment_options[:cloudfront]
-            cloudfront_url(args)
-          else
-            s3_url(args)
-          end
-        end
-
-        # All private objects are accessible via an authenticated GET request to the S3 servers. You can generate an
+        # All private objects are accessible via an authenticated GET request to the S3 servers. You can generate an 
         # authenticated url for an object like this:
         #
         #   @photo.authenticated_s3_url
@@ -307,13 +221,13 @@ module Technoweenie # :nodoc:
         # By default authenticated urls expire 5 minutes after they were generated.
         #
         # Expiration options can be specified either with an absolute time using the <tt>:expires</tt> option,
-        # or with a number of seconds relative to now with the <tt>:expires_in</tt> option:
+        # or with a number of seconds relative to now with the <tt>:expires</tt> option:
         #
         #   # Absolute expiration date (October 13th, 2025)
         #   @photo.authenticated_s3_url(:expires => Time.mktime(2025,10,13).to_i)
-        #
+        #   
         #   # Expiration in five hours from now
-        #   @photo.authenticated_s3_url(:expires_in => 5.hours)
+        #   @photo.authenticated_s3_url(:expires => 5.hours)
         #
         # You can specify whether the url should go over SSL with the <tt>:use_ssl</tt> option.
         # By default, the ssl settings for the current connection will be used:
@@ -322,12 +236,15 @@ module Technoweenie # :nodoc:
         #
         # Finally, the optional thumbnail argument will output the thumbnail's filename (if any):
         #
-        #   @photo.authenticated_s3_url('thumbnail', :expires_in => 5.hours, :use_ssl => true)
+        #   @photo.authenticated_s3_url('thumbnail', :expires => 5.hours, :use_ssl => true)
         def authenticated_s3_url(*args)
-          options   = args.extract_options!
-          options[:expires_in] = options[:expires_in].to_i if options[:expires_in]
-          thumbnail = args.shift
-          S3Object.url_for(full_filename(thumbnail), bucket_name, options)
+          thumbnail = args.first.is_a?(String) ? args.first : nil
+          options = args.last.is_a?(Hash) ? args.last : {}
+          s3_object(thumbnail).url_for(:read, options).to_s
+        end
+
+        def create_temp_file
+          write_to_temp_file current_data
         end
 
         def current_data
@@ -337,59 +254,60 @@ module Technoweenie # :nodoc:
         def s3_protocol
           Technoweenie::AttachmentFu::Backends::S3Backend.protocol
         end
-
+        
         def s3_hostname
           Technoweenie::AttachmentFu::Backends::S3Backend.hostname
         end
-
+          
         def s3_port_string
           Technoweenie::AttachmentFu::Backends::S3Backend.port_string
         end
 
-        def cloudfront_distribution_domain
-          Technoweenie::AttachmentFu::Backends::S3Backend.distribution_domain
+        def s3_object(thumbnail=nil)
+          bucket.objects[full_filename(thumbnail)]
         end
 
-        # Called in the after_destroy callback
-        def destroy_file
-          S3Object.delete full_filename, bucket_name
-        rescue Errno::ECONNRESET
-          retries ||= 0
-          retries += 1
-          retry if retries <= 1
-        end
-
-        def rename_file
-          return unless @old_filename && @old_filename != filename
-
-          old_full_filename = File.join(base_path, @old_filename)
-
-          S3Object.rename(
-            old_full_filename,
-            full_filename,
-            bucket_name,
-            :access => attachment_options[:s3_access]
-          )
-
-          @old_filename = nil
-          true
-        end
-
-        def save_to_storage
-          if save_attachment?
-            S3Object.store(
-              full_filename,
-              (temp_path ? File.open(temp_path) : temp_data),
-              bucket_name,
-              :content_type => content_type,
-              :access => attachment_options[:s3_access],
-              "x-amz-server-side-encryption" => "AES256" # this a band-aid
-            )
+        protected
+          def s3_access
+            attachment_options[:s3_access] || :public_read
           end
 
-          @old_filename = nil
-          true
-        end
+          # Called in the after_destroy callback
+          def destroy_file
+            s3_object.delete
+          end
+
+          def rename_file
+            unless @old_filename && @old_filename != filename
+              return
+            end
+            
+            old_full_filename = File.join(base_path, @old_filename)
+
+            old_s3_obj = bucket.objects[old_full_filename]
+            new_s3_obj = bucket.objects[full_filename]
+            new_s3_obj.copy_from(old_s3_obj, :acl => s3_access)
+
+            old_s3_obj.delete
+
+            @old_filename = nil
+            true
+          end
+
+          def save_to_storage
+            if save_attachment?
+              obj = bucket.objects[full_filename]
+              obj_data = (temp_path ? File.open(temp_path) : temp_data)
+              obj.write(
+                :data => obj_data,
+                :content_type => content_type,
+                :acl => s3_access
+              )
+            end
+
+            @old_filename = nil
+            true
+          end
       end
     end
   end

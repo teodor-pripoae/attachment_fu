@@ -1,48 +1,8 @@
-require 'digest/md5'
-require 'active_support'
-require 'active_support/core_ext'
-require 'active_support/dependencies'
-require 'timeout'
-
 module Technoweenie # :nodoc:
   module AttachmentFu # :nodoc:
     @@default_processors = %w(ImageScience Rmagick MiniMagick Gd2 CoreImage)
-    if defined?(Rails)
-      @@tempfile_path      = File.join(Rails.root.to_s, 'tmp', 'attachment_fu')
-    else
-      @@tempfile_path      = File.join(RAILS_ROOT, 'tmp', 'attachment_fu')
-    end
-    @@content_types      = [
-      'image/jpeg',
-      'image/pjpeg',
-      'image/jpg',
-      'image/gif',
-      'image/png',
-      'image/x-png',
-      'image/jpg',
-      'image/x-ms-bmp',
-      'image/bmp',
-      'image/x-bmp',
-      'image/x-bitmap',
-      'image/x-xbitmap',
-      'image/x-win-bitmap',
-      'image/x-windows-bmp',
-      'image/ms-bmp',
-      'application/bmp',
-      'application/x-bmp',
-      'application/x-win-bitmap',
-      'application/preview',
-      'image/jp_',
-      'application/jpg',
-      'application/x-jpg',
-      'image/pipeg',
-      'image/vnd.swiftview-jpeg',
-      'image/x-xbitmap',
-      'application/png',
-      'application/x-png',
-      'image/gi_',
-      'image/x-citrix-pjpeg'
-    ]
+    @@tempfile_path      = File.join(Rails.root.to_s, 'tmp', 'attachment_fu')
+    @@content_types      = ['image/jpeg', 'image/pjpeg', 'image/gif', 'image/png', 'image/x-png', 'image/jpg']
     mattr_reader :content_types, :tempfile_path, :default_processors
     mattr_writer :tempfile_path
 
@@ -60,13 +20,7 @@ module Technoweenie # :nodoc:
       # *  <tt>:thumbnail_class</tt> - Set what class to use for thumbnails.  This attachment class is used by default.
       # *  <tt>:path_prefix</tt> - path to store the uploaded files.  Uses public/#{table_name} by default for the filesystem, and just #{table_name}
       #      for the S3 backend.  Setting this sets the :storage to :file_system.
-
       # *  <tt>:storage</tt> - Use :file_system to specify the attachment data is stored with the file system.  Defaults to :db_system.
-      # *  <tt>:cloundfront</tt> - Set to true if you are using S3 storage and want to serve the files through CloudFront.  You will need to
-      #      set a distribution domain in the amazon_s3.yml config file. Defaults to false
-      # *  <tt>:bucket_key</tt> - Use this to specify a different bucket key other than :bucket_name in the amazon_s3.yml file.  This allows you to use
-      #      different buckets for different models. An example setting would be :image_bucket and the you would need to define the name of the corresponding
-      #      bucket in the amazon_s3.yml file.
 
       # *  <tt>:keep_profile</tt> By default image EXIF data will be stripped to minimize image size. For small thumbnails this proivides important savings. Picture quality is not affected. Set to false if you want to keep the image profile as is. ImageScience will allways keep EXIF data.
       #
@@ -84,10 +38,6 @@ module Technoweenie # :nodoc:
       #   has_attachment :storage => :file_system, :path_prefix => 'public/files',
       #     :thumbnails => { :thumb => [50, 50], :geometry => 'x50' }
       #   has_attachment :storage => :s3
-      #   has_attachment :storage_key => 'store',
-      #                     :backends => { 's3' => { :storage => :s3, :path_prefix => 'foo', :max_size => 5.kilobyte, :default => true },
-      #                                    'local1' => { :storage => :file_system, :path_prefix => 'data/public' } }
-
       def has_attachment(options = {})
         # this allows you to redefine the acts' options for each subclass, however
         options[:min_size]         ||= 1
@@ -95,9 +45,7 @@ module Technoweenie # :nodoc:
         options[:size]             ||= (options[:min_size]..options[:max_size])
         options[:thumbnails]       ||= {}
         options[:thumbnail_class]  ||= self
-        options[:s3_access]        ||= :private
-        options[:cloudfront]       ||= false
-        options[:store_name]       ||= :default
+        options[:s3_access]        ||= :public_read
         options[:content_type] = [options[:content_type]].flatten.collect! { |t| t == :image ? Technoweenie::AttachmentFu.content_types : t }.flatten unless options[:content_type].nil?
 
         unless options[:thumbnails].is_a?(Hash)
@@ -107,59 +55,35 @@ module Technoweenie # :nodoc:
         extend ClassMethods unless (class << self; included_modules; end).include?(ClassMethods)
         include InstanceMethods unless included_modules.include?(InstanceMethods)
 
-        attr_accessor :thumbnail_resize_options
-
         parent_options = attachment_options || {}
-
-        self.attachment_options = options
         # doing these shenanigans so that #attachment_options is available to processors and backends
+        self.attachment_options = options
 
+        attr_accessor :thumbnail_resize_options
 
         attachment_options[:storage]     ||= (attachment_options[:file_system_path] || attachment_options[:path_prefix]) ? :file_system : :db_file
         attachment_options[:storage]     ||= parent_options[:storage]
         attachment_options[:path_prefix] ||= attachment_options[:file_system_path]
         if attachment_options[:path_prefix].nil?
-          attachment_options[:path_prefix] = case attachment_options[:storage]
-            when :s3 then table_name
-            when :cloud_files then table_name
-            when :mogile_fs then table_name
-            else File.join("public", table_name)
-          end
+          attachment_options[:path_prefix] = attachment_options[:storage] == :s3 ? table_name : File.join("public", table_name)
         end
         attachment_options[:path_prefix]   = attachment_options[:path_prefix][1..-1] if options[:path_prefix].first == '/'
 
-        association_options = { :foreign_key => 'parent_id' }
-        if attachment_options[:association_options]
-          association_options.merge!(attachment_options[:association_options])
-        end
-        with_options(association_options) do |m|
+        with_options :foreign_key => 'parent_id' do |m|
           m.has_many   :thumbnails, :class_name => "::#{attachment_options[:thumbnail_class]}"
           m.belongs_to :parent, :class_name => "::#{base_class}" unless options[:thumbnails].empty?
         end
 
-        self.attachment_backends ||= {}
-        storage_klass_name = case options[:storage]
-          when :mogile_fs
-            "MogileFS"
-          else
-            options[:storage].to_s.classify
-        end
-
-        storage_klass = Technoweenie::AttachmentFu::Backends.const_get("#{storage_klass_name}Backend")
-
-        self.attachment_backends[attachment_options[:store_name]] = {:klass => storage_klass, :options => attachment_options}
-        storage_klass.included_in_base(self)
-
-        # support syntax-sugar of "a = Attachment.new ; a.s3.authenticated_s3_url" for accessing store-specific stuff
-        self.class_eval "def #{attachment_options[:store_name]}; get_storage_delegator(:#{attachment_options[:store_name]}); end"
+        storage_mod = Technoweenie::AttachmentFu::Backends.const_get("#{options[:storage].to_s.classify}Backend")
+        include storage_mod unless included_modules.include?(storage_mod)
 
         case attachment_options[:processor]
         when :none, nil
           processors = Technoweenie::AttachmentFu.default_processors.dup
           begin
             if processors.any?
-              attachment_options[:processor] = processors.first
-              processor_mod = Technoweenie::AttachmentFu::Processors.const_get("#{attachment_options[:processor].to_s.classify}Processor")
+              attachment_options[:processor] = "#{processors.first}Processor"
+              processor_mod = Technoweenie::AttachmentFu::Processors.const_get(attachment_options[:processor])
               include processor_mod unless included_modules.include?(processor_mod)
             end
           rescue Object, Exception
@@ -180,31 +104,6 @@ module Technoweenie # :nodoc:
         end unless parent_options[:processor] # Don't let child override processor
       end
 
-      # helper method for has_attachment, for if you want to set up stuff from a yaml file
-      def setup_attachment_fu(extra_opts = {}, config_filename = nil)
-        config_file ||= RAILS_ROOT + "/config/attachments.yml"
-        raise "No attachment_fu configuration found, tried #{config_file}" unless File.exist?(config_file)
-
-        att_opts = YAML.load(ERB.new(File.read(config_file)).result)[Rails.env]
-        raise "No attachment_fu configuration found for environment #{Rails.env}" unless att_opts
-
-        arr = att_opts[self.name.tableize] || att_opts[:default]
-
-        raise "No attachment_fu configuration found for table #{self.name.tableize}" unless arr
-        arr = [arr] if arr.is_a?(Hash) # both flavors!
-        arr.each do |val|
-          options = val.symbolize_keys.merge(extra_opts)
-
-          options[:thumbnails] = options[:thumbnails].symbolize_keys if options[:thumbnails]
-          [:store_name, :storage].each { |k|
-            options[k] = options.delete(k).to_sym if options[k]
-          }
-
-          has_attachment options
-        end
-      end
-
-
       def load_related_exception?(e) #:nodoc: implementation specific
         case
         when e.kind_of?(LoadError), e.kind_of?(MissingSourceFile), $!.class.name == "CompilationError"
@@ -217,7 +116,6 @@ module Technoweenie # :nodoc:
       end
       private :load_related_exception?
     end
-
 
     module ClassMethods
       delegate :content_types, :to => Technoweenie::AttachmentFu
@@ -235,14 +133,54 @@ module Technoweenie # :nodoc:
 
       def self.extended(base)
         base.class_attribute :attachment_options
-        base.class_attribute :attachment_backends
         base.before_destroy :destroy_thumbnails
-        base.before_update :rename_files
         base.before_validation :set_size_from_temp_path
-        base.before_validation :process_attachment, :process_attachment_moves
-        base.before_validation :generate_md5, :if => Proc.new {|a| a.respond_to?(:md5) && a.new_record?}
         base.after_save :after_process_attachment
-        base.after_destroy :destroy_files
+        base.after_destroy :destroy_file
+        base.after_validation :process_attachment
+        if defined?(::ActiveSupport::Callbacks)
+          base.define_callbacks :after_resize, :after_attachment_saved, :before_thumbnail_saved
+        end
+      end
+
+      unless defined?(::ActiveSupport::Callbacks)
+        # Callback after an image has been resized.
+        #
+        #   class Foo < ActiveRecord::Base
+        #     acts_as_attachment
+        #     after_resize do |record, img|
+        #       record.aspect_ratio = img.columns.to_f / img.rows.to_f
+        #     end
+        #   end
+        def after_resize(&block)
+          write_inheritable_array(:after_resize, [block])
+        end
+
+        # Callback after an attachment has been saved either to the file system or the DB.
+        # Only called if the file has been changed, not necessarily if the record is updated.
+        #
+        #   class Foo < ActiveRecord::Base
+        #     acts_as_attachment
+        #     after_attachment_saved do |record|
+        #       ...
+        #     end
+        #   end
+        def after_attachment_saved(&block)
+          write_inheritable_array(:after_attachment_saved, [block])
+        end
+
+        # Callback before a thumbnail is saved.  Use this to pass any necessary extra attributes that may be required.
+        #
+        #   class Foo < ActiveRecord::Base
+        #     acts_as_attachment
+        #     before_thumbnail_saved do |thumbnail|
+        #       record = thumbnail.parent
+        #       ...
+        #     end
+        #   end
+        def before_thumbnail_saved(&block)
+          write_inheritable_array(:before_thumbnail_saved, [block])
+        end
       end
 
       # Get the thumbnail class, which is the current attachment class by default.
@@ -252,16 +190,9 @@ module Technoweenie # :nodoc:
         attachment_options[:thumbnail_class]
       end
 
-      def new_tempfile(file)
-        basename, ext = [File.basename(file), File.extname(file)]
-
-        Tempfile.new([basename, ext], Technoweenie::AttachmentFu.tempfile_path)
-      end
-
-
       # Copies the given file path to a new tempfile, returning the closed tempfile.
       def copy_to_temp_file(file, temp_base_name)
-        tmp = new_tempfile(temp_base_name)
+        tmp = Tempfile.new(temp_base_name, Technoweenie::AttachmentFu.tempfile_path)
         tmp.close
         FileUtils.cp file, tmp.path
         tmp
@@ -269,7 +200,7 @@ module Technoweenie # :nodoc:
 
       # Writes the given data to a new tempfile, returning the closed tempfile.
       def write_to_temp_file(data, temp_base_name)
-        tmp = new_tempfile(temp_base_name)
+        tmp = Tempfile.new(temp_base_name, Technoweenie::AttachmentFu.tempfile_path)
         tmp.binmode
         tmp.write data
         tmp.close
@@ -278,6 +209,10 @@ module Technoweenie # :nodoc:
     end
 
     module InstanceMethods
+      def self.included(base)
+        base.define_callbacks *[:after_resize, :after_attachment_saved, :before_thumbnail_saved] if base.respond_to?(:define_callbacks)
+      end
+
       # Checks whether the attachment's content type is an image content type
       def image?
         self.class.image?(content_type)
@@ -307,18 +242,18 @@ module Technoweenie # :nodoc:
 
       # Creates or updates the thumbnail for the current attachment.
       def create_or_update_thumbnail(temp_file, file_name_suffix, *size)
-        thumbnailable? || raise(ThumbnailError.new("Can't create a thumbnail if the content type is not an image or there is no parent_id column"))
+        if !thumbnailable?
+          raise ThumbnailError.new("Can't create a thumbnail if the content type is not an image or there is no parent_id column")
+        end
         thumb = find_or_initialize_thumbnail(file_name_suffix)
-
-        thumb.temp_paths.unshift temp_file
-        thumb.send(:'attributes=', {
+        thumb.attributes = {
           :content_type             => content_type,
           :filename                 => thumbnail_name_for(file_name_suffix),
+          :temp_path                => temp_file,
           :thumbnail_resize_options => size
-        })
-        thumb.stores = stores
+        }
+        callback_with_args :before_thumbnail_saved, thumb
         thumb.save!
-
         thumb
       end
 
@@ -329,11 +264,7 @@ module Technoweenie # :nodoc:
 
       # Sanitizes a filename.
       def filename=(new_name)
-        with_each_store(true) do |store|
-          store.notify_rename if store.respond_to?(:notify_rename)
-        end
-
-        write_attribute :filename, sanitize_filename(new_name) if column_for_attribute(:filename)
+        write_attribute :filename, sanitize_filename(new_name)
       end
 
       # Returns the width/height in a suitable format for the image_tag helper: (100x100)
@@ -357,25 +288,18 @@ module Technoweenie # :nodoc:
       #     <p><%= submit_tag :Save %>
       #   <% end -%>
       #
-      #   @attachment = AttachmentTest.create! params[:attachment]
+      #   @attachment = Attachment.create! params[:attachment]
       #
       # TODO: Allow it to work with Merb tempfiles too.
       def uploaded_data=(file_data)
-        if file_data.respond_to?(:content_type)
-          return nil if file_data.size == 0
-          self.content_type = file_data.content_type
-          self.filename     = file_data.original_filename if respond_to?(:filename)
-        else
-          return nil if file_data.blank? || file_data['size'] == 0
-          self.content_type = file_data['content_type']
-          self.filename =  file_data['filename']
-          file_data = file_data['tempfile']
-        end
+        return nil if file_data.nil? || file_data.size == 0
+        self.content_type = file_data.content_type
+        self.filename     = file_data.original_filename if respond_to?(:filename)
         if file_data.is_a?(StringIO)
           file_data.rewind
-          set_temp_data file_data.read
+          self.temp_data = file_data.read
         else
-          self.temp_paths.unshift file_data
+          self.temp_path = file_data
         end
       end
 
@@ -385,12 +309,21 @@ module Technoweenie # :nodoc:
       # it's not needed anymore.  The collection is cleared after saving the attachment.
       def temp_path
         p = temp_paths.first
-        p.respond_to?(:path) ? p.path : p
+        p.respond_to?(:path) ? p.path : p.to_s
       end
 
       # Gets an array of the currently used temp paths.  Defaults to a copy of #full_filename.
       def temp_paths
-        @temp_paths ||= []
+        @temp_paths ||= (new_record? || !respond_to?(:full_filename) || !File.exist?(full_filename) ?
+          [] : [copy_to_temp_file(full_filename)])
+      end
+
+      # Adds a new temp_path to the array.  This should take a string or a Tempfile.  This class makes no
+      # attempt to remove the files, so Tempfiles should be used.  Tempfiles remove themselves when they go out of scope.
+      # You can also use string paths for temporary files, such as those used for uploaded files in a web server.
+      def temp_path=(value)
+        temp_paths.unshift value
+        temp_path
       end
 
       # Gets the data from the latest temp file.  This will read the file into memory.
@@ -399,8 +332,8 @@ module Technoweenie # :nodoc:
       end
 
       # Writes the given data to a Tempfile and adds it to the collection of temp files.
-      def set_temp_data(data)
-        temp_paths.unshift write_to_temp_file data unless data.nil?
+      def temp_data=(data)
+        self.temp_path = write_to_temp_file data unless data.nil?
       end
 
       # Copies the given file to a randomly named Tempfile.
@@ -413,62 +346,11 @@ module Technoweenie # :nodoc:
         self.class.write_to_temp_file data, random_tempfile_filename
       end
 
-      # supports backwards compat -- we pretend that methods are mixed in.  Might screw with someone using respond_to? though.
-      ONE_STORE_METHODS = [:full_filename, :current_data, :base_path, :attachment_path_id, :partitioned_path, :cloudfront_url,
-                           :authenticated_s3_url, :s3_config, :cloudfiles_config, :container_name, :cloudfiles_url, :cloudfiles_storage_url,  :cloudfiles_authtoken, :s3_url, :bucket_name]
+      # Stub for creating a temp file from the attachment data.  This should be defined in the backend module.
+      def create_temp_file() end
 
-      ONE_STORE_METHODS.each do |method|
-        eval("def #{method}(*args) ; on_one_store(:#{method}, nil, *args) ; end")
-      end
-
-      def supports_multiple_stores?
-        has_attribute?(:stores)
-      end
-
-      def to_store_list(input)
-        return [] if input.nil?
-        input = input.split(",") if input.is_a?(String)
-        input.flatten! if input.is_a?(Array)
-        input.map(&:to_sym)
-      end
-
-      private :to_store_list
-
-      def stores
-        if !supports_multiple_stores?
-          [self.class.attachment_backends.keys.first]
-        else
-          stores = read_attribute(:stores) || ''
-          to_store_list(stores)
-        end
-      end
-
-      def old_stores
-        if new_record?
-          []
-        elsif !supports_multiple_stores?
-          [self.class.attachment_backends.keys.first]
-        else
-          to_store_list(stores_was)
-        end
-      end
-
-      def stored_in?(backend)
-        old_stores.include?(backend)
-      end
-
-      def stores=(*input)
-        if supports_multiple_stores?
-          write_attribute(:stores, input.flatten.uniq.map(&:to_s).join(','))
-        end
-      end
-
-      # Creates a temp file with the current data.
-      def create_temp_file
-        write_to_temp_file current_data
-      end
-
-      # Allows you to work with a processed representation (RMagick, ImageScience, etc) of the attachment in a block.
+      # Allows you to work with a processed representation (RMagick,
+      # ImageScience, etc) of the attachment in a block.
       #
       #   @attachment.with_image do |img|
       #     self.data = img.thumbnail(100, 100).to_blob
@@ -478,28 +360,6 @@ module Technoweenie # :nodoc:
         self.class.with_image(temp_path, &block)
       end
 
-      def save_without_processing
-        without_processing { save }
-      end
-
-      def save_without_processing!
-        without_processing { save! }
-      end
-
-      def generate_md5
-        self.md5 = md5_from_file(temp_path || create_temp_file) rescue nil
-      end
-
-      def logger
-        @logger ||= begin
-          if Object.const_defined?(:Rails)
-            Rails.logger
-          else
-            Logger.new($stdout)
-          end
-        end
-      end
-
       protected
         # Generates a unique filename for a Tempfile.
         def random_tempfile_filename
@@ -507,8 +367,6 @@ module Technoweenie # :nodoc:
         end
 
         def sanitize_filename(filename)
-          return unless filename
-
           name = filename.strip
 
           # NOTE: File.basename doesn't work right with Windows paths on Unix
@@ -516,7 +374,7 @@ module Technoweenie # :nodoc:
           name.gsub! /^.*(\\|\/)/, ''
 
           # Finally, replace all non alphanumeric, underscore or periods with underscore
-          name.gsub! /[^A-Za-z0-9\.\-]/, '_'
+          name.gsub! /[^a-zA-Z0-9_\.\-]/, '_'
 
           name
         end
@@ -530,18 +388,7 @@ module Technoweenie # :nodoc:
         def attachment_attributes_valid?
           [:size, :content_type].each do |attr_name|
             enum = attachment_options[attr_name]
-            enum_str = case enum
-              when Array
-                enum.join(",")
-              else
-                enum.to_s
-            end
-
-            msg = Object.const_defined?(:I18n) ?  I18n.translate("activerecord.errors.messages.inclusion_with_attribute", :attribute => I18n.translate("activerecord.attributes.attachments.#{attr_name}")) :
-                                                        ActiveRecord::Errors.default_error_messages[:inclusion]
-            unless enum.nil? || enum.include?(send(attr_name))
-              errors.add attr_name, msg + " (#{enum_str})"
-            end
+            errors.add attr_name, I18n.translate('activerecord.errors.messages')[:inclusion] unless enum.nil? || enum.include?(send(attr_name))
           end
         end
 
@@ -552,157 +399,22 @@ module Technoweenie # :nodoc:
             thumbnail_class.find_or_initialize_by_thumbnail(file_name_suffix.to_s)
         end
 
-        def has_attachment_processor?
-          self.respond_to?(:_process_attachment, true)
-        end
-
-        def without_processing
-          begin
-            @no_processing = true
-            yield
-          ensure
-            @no_processing = false
-          end
-        end
-
+        # Stub for a #process_attachment method in a processor
         def process_attachment
-          @saved_attachment ||= save_attachment?
-          if @saved_attachment && has_attachment_processor? && !@no_processing
-            self._process_attachment
-          end
-          true
+          @saved_attachment = save_attachment?
         end
-
-        # if we're not given a specific storage engine, we'll grab one that the attachment actually has, starting with the default.
-        def get_storage_delegator(backend)
-          @attachment_fu_delegators ||= {}
-
-          backends = self.class.attachment_backends
-          if backend.nil?
-            if backends.size == 1
-              backend = backends.keys.first
-            else
-              list = backends.find_all { |a|
-                stored_in?(a[0])
-              }
-              backend = list.map { |k, v| v[:options][:default] ? k : nil }.compact.first
-              if !backend
-                backend = list[0][0]
-              end
-            end
-          end
-
-          hash = backends[backend]
-          @attachment_fu_delegators[backend] ||= hash[:klass].new(self, hash[:options])
-          @attachment_fu_delegators[backend]
-        end
-
-        def on_one_store(method, backend, *args)
-          delegator = nil
-          if backend
-            delegator = get_storage_delegator(backend)
-          else
-            with_each_store(true) { |store|
-              # using methods.include instead of respond_to? because the delegation has already screwed up respond_to?
-              # checking both the string (ruby 1.8) and the symbol (ruby 1.9)
-              if store.methods.include?(method.to_s) || store.methods.include?(method.to_sym)
-                delegator = store
-                break
-              end
-            }
-          end
-
-          raise NoMethodError, "No stores responded to \"#{method}\"" if delegator.nil?
-          delegator.send(method, *args)
-        end
-
-        def with_each_store(only_active=false)
-          self.class.attachment_backends.each do |k, v|
-            if !only_active || stored_in?(k)
-              yield get_storage_delegator(k)
-            end
-          end
-        end
-
-        def process_attachment_moves
-          return true if !supports_multiple_stores?
-          if new_record?
-            @saved_attachment = true
-            self.stores = default_attachment_stores
-            raise "Please configure one attachment store as :default" if stores.empty?
-            true
-          else
-            # update -- if we've set uploaded_data =, we don't need to run these checks
-            return true if @saved_attachment
-
-            if Set.new(old_stores) != Set.new(stores)
-              data = current_data
-              set_temp_data(data) if data
-              @saved_attachment = true
-            end
-          end
-        end
-
-        def default_attachment_stores
-          backends = self.class.attachment_backends
-          if backends.size == 1
-            [backends.keys.first]
-          else
-            backends.map { |k, v| v[:options][:default] ? k : nil }.compact
-          end
-        end
-
 
         # Cleans up after processing.  Thumbnails are created, the attachment is stored to the backend, and the temp_paths are cleared.
         def after_process_attachment
           if @saved_attachment
-            set_size_from_temp_path
-
-            if has_attachment_processor? && thumbnailable? && !attachment_options[:thumbnails].blank? && parent_id.nil? && !@no_processing
+            if respond_to?(:process_attachment_with_processing) && thumbnailable? && !attachment_options[:thumbnails].blank? && parent_id.nil?
               temp_file = temp_path || create_temp_file
               attachment_options[:thumbnails].each { |suffix, size| create_or_update_thumbnail(temp_file, suffix, *size) }
             end
-
-            with_each_store do |store|
-              name = store.attachment_options[:store_name]
-
-              if stores.include?(name)
-                # if we've only got one store, don't bother with fancy-pants logic.  Just raise on failure.
-                if stores.size == 1
-                  store.save_to_storage
-                else
-                  begin
-                    Timeout.timeout(store.attachment_options[:timeout]) {
-                      store.save_to_storage
-                    }
-                  rescue Exception => e
-                    logger.error("Exception saving #{self.filename} to #{name}: #{e.inspect}")
-                    new_stores = stores.reject { |s| s == name.to_sym }.join(",")
-                    write_attribute(:stores, new_stores)
-                    self.class.update_all({:stores => new_stores}, ["id = ?", self.id])
-                  end
-                end
-              elsif stores_was && to_store_list(stores_was).include?(name) && store.current_data # needs a delete
-                store.destroy_file
-              end
-            end
-
+            save_to_storage
             @temp_paths.clear
             @saved_attachment = nil
-            @old_attachment_stores = nil
-            @target_attachment_stores = nil
-          end
-        end
-
-        def destroy_files
-          with_each_store(true) do |store|
-            store.destroy_file
-          end
-        end
-
-        def rename_files
-          with_each_store(true) do |store|
-            store.rename_file
+            callback :after_attachment_saved
           end
         end
 
@@ -715,17 +427,45 @@ module Technoweenie # :nodoc:
           end
         end
 
+        # Yanked from ActiveRecord::Callbacks, modified so I can pass args to the callbacks besides self.
+        # Only accept blocks, however
+        if ActiveSupport.const_defined?(:Callbacks)
+          # Rails 2.1 and beyond!
+          def callback_with_args(method, arg = self)
+            notify(method)
+
+            result = run_callbacks(method, { :object => arg }) { |result, object| result == false }
+
+            if result != false && respond_to_without_attributes?(method)
+              result = send(method)
+            end
+
+            result
+          end
+
+          def run_callbacks(kind, options = {}, &block)
+            options.reverse_merge!( :object => self )
+            if self.class.respond_to? "#{kind}_callback_chain"
+              self.class.send("#{kind}_callback_chain").run(options[:object], options, &block)
+            end
+          end
+        else
+          # Rails 2.0
+          def callback_with_args(method, arg = self)
+            notify(method)
+
+            result = nil
+            callbacks_for(method).each do |callback|
+              result = callback.call(self, arg)
+              return false if result == false
+            end
+            result
+          end
+        end
+
         # Removes the thumbnails for the attachment, if it has any
         def destroy_thumbnails
           self.thumbnails.each { |thumbnail| thumbnail.destroy } if thumbnailable?
-        end
-
-        def md5_from_file(path)
-          digest = Digest::MD5.new
-          File.open(path) do |file|
-            digest << file.read(4096) until file.eof?
-          end
-          digest.hexdigest
         end
     end
   end

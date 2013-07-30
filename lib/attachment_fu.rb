@@ -1,5 +1,6 @@
 require 'tempfile'
 require 'active_record'
+require 'active_support/dependencies'
 
 require 'geometry'
 
