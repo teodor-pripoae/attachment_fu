@@ -432,26 +432,26 @@ module Technoweenie # :nodoc:
         # Only accept blocks, however
         if ActiveSupport.const_defined?(:Callbacks)
           # Rails 2.1 and beyond!
-          # def callback_with_args(method, arg = self)
-          #   notify(method)
-          # 
-          #   result = run_callbacks(method, { :object => arg }) { |result, object| result == false }
-          # 
-          #   if result != false && respond_to_without_attributes?(method)
-          #     result = send(method)
-          #   end
-          # 
-          #   result
-          # end
-          # 
-          # def run_callbacks(kind, options = {}, &block)
-          #   options.reverse_merge!( :object => self )
-          #   if self.class.respond_to? "#{kind}_callback_chain"
-          #     self.class.send("#{kind}_callback_chain").run(options[:object], options, &block)
-          #   else
-          #     false
-          #   end
-          # end
+          def callback(method, arg = self)
+            notify(method)
+          
+            result = run_callbacks(method, { :object => arg }) { |result, object| result == false }
+          
+            if result != false && respond_to_without_attributes?(method)
+              result = send(method)
+            end
+          
+            result
+          end
+          
+          def run_callbacks(kind, options = {}, &block)
+            options.reverse_merge!( :object => self )
+            if self.class.respond_to? "#{kind}_callback_chain"
+              self.class.send("#{kind}_callback_chain").run(options[:object], options, &block)
+            else
+              false
+            end
+          end
         else
           # Rails 2.0
           def callback_with_args(method, arg = self)
